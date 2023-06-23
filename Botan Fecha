@@ -1,0 +1,2 @@
+if(GetSelectedCount(Fecha)>0 OR GetSelectedCount([Región])>0 OR GetSelectedCount(Plaza) OR GetSelectedCount(Distrito) 
+   OR GetSelectedCount(CAJA_CLUSTER)>0,'Fecha:','Semana: '&right($(vUltimaSemana),2)&' ')
