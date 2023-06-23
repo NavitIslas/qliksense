@@ -1,0 +1,310 @@
+//Main 
+SET ThousandSep=',';
+SET DecimalSep='.';
+SET MoneyThousandSep=',';
+SET MoneyDecimalSep='.';
+SET MoneyFormat='$#,##0.00;-$#,##0.00';
+SET TimeFormat='h:mm:ss TT';
+SET DateFormat='YYYY-MM-DD';
+SET TimestampFormat='YYYY-MM-DD h:mm:ss[.fff] TT';
+SET FirstWeekDay=6;
+SET BrokenWeeks=1;
+SET ReferenceDay=0;
+SET FirstMonthOfYear=1;
+SET CollationLocale='en-US';
+SET CreateSearchIndexOnReload=1;
+SET MonthNames='Ene;Feb;Mar;Abr;May;Jun;Jul;Ago;Sep;Oct;Nov;Dic';
+SET LongMonthNames='January;February;March;April;May;June;July;August;September;October;November;December';
+SET DayNames='Mon;Tue;Wed;Thu;Fri;Sat;Sun';
+SET LongDayNames='Monday;Tuesday;Wednesday;Thursday;Friday;Saturday;Sunday';
+
+//Mapping
+
+LimpiezaCalle:
+Mapping
+Load * Inline [
+Calle,Abreviacion
+AV ,|
+AV .,|
+AV.,|
+AVENIDA ,|
+AVE ,|
+CALLE ,|
+CERRADA ,|
+CDA ,|
+C. ,|
+BOULEVARD ,|
+BLVD. ,|
+BLVD ,|
+CARRETERA ,|
+CARR. ,|
+CALZ. ,|
+CALZADA ,|
+PRIV. ,|
+PRIVADA ,|
+PROL. ,|
+PROLONGACION ,|
+DE LOS ,|
+- ,|
+Á,A
+É,E
+Í,I
+Ó,O
+Ú,U
+];
+
+//Programa
+// función para mapear el campo estado limpio, del catalogo de sepomex
+MapSepomex:
+Mapping Load
+    d_codigo				as CodigoPostal__c,
+    d_estado				as Estado_Sepomex
+FROM [lib://Dev E/BackUp/Geografia/Sepomex.qvd]
+(qvd);
+
+/* Creamos la base Estados con el qvd sitio, limpiamos los campos Calle_c y 
+CodigoPostal__c,mapeamos los estados del catalogo de sepomex, agregamos 
+un ID por cada estado y creamos una llave con el ID y la calle*/
+Estados:
+Load
+	*,
+    ID&'-'&Calle__c as Key
+WHERE Len(Calle__c)>3 And Len(CodigoPostal__c)>4;
+
+// (Calle__c<>'' or not IsNull(Calle__c))
+//       AND (CodigoPostal__c<>'' or not IsNull(CodigoPostal__c));
+ 
+///////////   Paso 3
+Load 
+	*,
+	AutoNumber(Estado_Sepomex) as ID;
+
+///////////   Paso 2    
+Load *
+Where not IsNull(Estado_Sepomex);
+
+///////////   Paso 1
+
+Load
+    IdCuentaBRM__c,
+    replace(trim(mapsubstring('LimpiezaCalle',trim(purgechar(upper(Calle__c),'1234567890|°-#.')))),'|','') AS Calle__c,
+    NumeroExterior__c,
+    NumeroInterior__c,
+    Colonia__c,
+    DelegacionMunicipio__c,
+    Ciudad__c,
+    Estado__c,
+    KEEPCHAR(upper(CodigoPostal__c),'1234567890') as CodigoPostal__c,
+    ApplyMap('MapSepomex',CodigoPostal__c,Null())  as Estado_Sepomex
+From [lib://Dev E/BackUp/Geografia/Sitio.qvd]
+(qvd);
+
+
+/*Agregamos el campo conteo_calles a la base Estados, que nos dice cuantas
+veces aparece cada calle en la base */
+Left Join(Estados)
+Load Key,
+     Count(Calle__c)            AS conteo_calles
+RESIDENT  Estados  
+Group by Key;
+
+
+
+//Iniciamos el ciclo for que va particionando la base por cada ID de su estado
+FOR i=1 to 2 step 1
+/* Hace el producto cruzado de todas las calles que aparecen menos de 50 veces en la base
+con las calles que aparecen mas de 50 veces en la base Estados y la llama base_a */
+        NoConcatenate
+        base_a:
+        Load 
+                 IdCuentaBRM__c				AS IdCuentaBRM__c_a,
+                 Calle__c                   AS calle,
+                 NumeroExterior__c          AS NumeroExterior__c_a,
+                 NumeroInterior__c          AS NumeroInterior__c_a,
+                 Colonia__c                 AS Colonia__c_a,
+                 DelegacionMunicipio__c     AS DelegacionMunicipio__c_a,
+                 Ciudad__c                  AS Ciudad__c_a,
+                 Estado__c                  AS Estado__c_a,
+                 Estado_Sepomex,
+                 CodigoPostal__c,
+                 conteo_calles              AS conteo_a
+        Resident Estados
+        Where ID='$(i)'
+              AND conteo_calles> 50;
+		
+        JOIN (base_a)
+        base_b:
+        Load 
+                 IdCuentaBRM__c             AS IdCuentaBRM__c_b,
+                 Calle__c                   AS calle2,
+                 NumeroExterior__c          AS NumeroExterior__c_b,
+                 NumeroInterior__c          AS NumeroInterior__c_b,
+                 Colonia__c                 AS Colonia__c_b,
+                 DelegacionMunicipio__c     AS DelegacionMunicipio__c_b,
+                 Ciudad__c                  AS Ciudad__c_b,
+                 Estado__c                  AS Estado__c_b,
+                 Estado_Sepomex,
+                 CodigoPostal__c,
+                 conteo_calles              AS conteo_b 
+        Resident Estados
+        Where ID='$(i)'
+              AND conteo_calles<= 50;
+            
+
+/* Crea la base distancias, que calcula la distancia de levenshtein entre las calles
+que aparecen menos de 50 veces en la base y las que aparecen más de 50 veces en la base,
+calcula la longitud del nombre de las calles que aparecen menos de 50 veces en base 
+y  la longitud de las calles que aparecen más de 50 veces en la base, y se queda 
+con la longitud de la calle cuyo nombre tiene mayor longitud */
+        NoConcatenate
+        distancias:
+        Load
+             *,
+             LevenshteinDist(calle,calle2) as DistLevenshtein,
+             LEN(calle) as longitud_calle,
+             LEN(calle2) as longitud_calle2, 
+             if(len(calle)-len(calle2) < 0, len(calle2),Len(calle)) as RESTACALLES
+        Resident base_a;
+        
+        Drop Table base_a;
+        
+/* Calcula un ratio que es igual a la distancia de levenshtein de las dos calles que
+se estan comparando entre la longitud de la calle cuyo nombre tiene mayor longitud,
+y calcula la similaridad que es igual a 1 menos el ratio calculado previamente */
+        NoConcatenate
+        calles:
+        Load
+            *,
+            DistLevenshtein/RESTACALLES as ratio,
+            1-(DistLevenshtein/RESTACALLES) as similaridad
+        Resident distancias;
+        Drop table distancias;
+
+/* Se trae maxima similaridad de las calles cuya comparacion tuvo una 
+similaridad mayor a .7 y le deja el nombre ya corregido de la calle, que es el nombre
+de las calles que aparecieron mas de 50 veces en la base */
+        NoConcatenate
+        similar:
+        LOAD calle,
+        MAX(similaridad) as similaridad
+        RESIDENT calles
+        Where similaridad>=.7
+        GROUP BY calle;
+
+        INNER JOIN (similar)
+        LOAD *
+        RESIDENT calles;
+
+        DROP TABLES calles;
+        
+/* Si i es igual a 1, lo que significa que esta trabajando con el primer estado crea
+la tabla final que ya trae el campo calle limpio de todas las calles del estado 
+con el ID 1 */
+        if '$(i)'=1 then
+        
+        NoConcatenate
+        final:
+        LOAD *
+        RESIDENT similar;
+        
+/* En caso de que i ya no sea 1, lo que significa que esta trabajando con los 24
+estados restantes, le concatena a la base anterior todas las bases que va generando 
+con las calles de cada uno de los siguientes 24 estados, ya limpias */
+        Else
+        
+        Concatenate(final)
+        LOAD *
+        RESIDENT similar;
+        
+        End If
+        
+        Drop Table similar;
+        
+NEXT;
+
+DROP TABLE Estados;    
+
+// Deja la base con los campos calle y estado ya limpios con el mismo formado del qvd sitio
+
+estados_limpios:
+Load 
+                 IdCuentaBRM__c_b           AS    IdCuentaBRM__c,
+                 calle						AS    Calle__c,
+                 NumeroExterior__c_b        AS 	  NumeroExterior__c,
+                 NumeroInterior__c_b        AS 	  NumeroInterior__c,
+                 Colonia__c_b               AS    Colonia__c,
+                 DelegacionMunicipio__c_b   AS    DelegacionMunicipio__c,
+                 Ciudad__c_b                AS    Ciudad__c,
+                 Estado_Sepomex             AS    Estado__c,
+                 CodigoPostal__c 
+RESIDENT final;
+DROP TABLE final;
+Exit script;
+// Mapea los estados del cataloggo de sepomex al qvd sitio
+Concatenate (estados_limpios)
+base:
+FIRST 1000000
+Load *,
+if(IsNull(Estado_Sepomex), estado, Estado_Sepomex) AS Estado__c;
+
+Load
+    IdCuentaBRM__c,
+    replace(trim(mapsubstring('LimpiezaCalle',trim(purgechar(upper(Calle__c),'1234567890|°-#.')))),'|','') AS Calle__c,
+    NumeroExterior__c,
+    NumeroInterior__c,
+    Colonia__c,
+    DelegacionMunicipio__c,
+    Ciudad__c,
+    Estado__c                                      AS estado,
+    KEEPCHAR(upper(CodigoPostal__c),'1234567890')  AS CodigoPostal__c,
+    ApplyMap('MapSepomex',CodigoPostal__c,Null())  AS Estado_Sepomex
+From [lib://Dev E/BackUp/Geografia/Sitio.qvd]
+(qvd)
+where not exists(IdCuentaBRM__c);
+
+drop fields Estado_Sepomex,estado;
+
+/* Limpia el campo estado del qvd sitio, dejandole el estado del ctalogo de sepomex,
+y en caso de que el campo del catalogo de sepomex este vacio le deja el estado que 
+ya tenia la base */
+/*
+NoConcatenate
+estados_a:
+Load  IdCuentaBRM__c,
+      Calle__c,
+      NumeroExterior__c,
+      NumeroInterior__c,
+      Colonia__c,
+      DelegacionMunicipio__c,
+      Ciudad__c,
+      CodigoPostal__c,
+      if(IsNull(Estado_Sepomex), estado, Estado_Sepomex) AS Estado__c
+Resident base
+where not exists(IdCuentaBRM__c);
+*/
+/* Se queda unicamente con las cuentas de la base del qvd sitio con el campo estado ya 
+limpio, que no estan dentro de la base en la que se limpio el campo calle */
+/*
+Right Keep
+
+estados_b:
+Load 
+                 IdCuentaBRM__c
+Resident estados_limpios;
+
+DROP TABLE base;
+DROP TABLE estados_b;
+*/
+/* Concatena la base de las cuentas que ya tienen el campo calle limpio, con las
+cuentas que quedaron fuera de la base que ya tiene el campo calle limpio */
+/*
+estados:
+Concatenate(estados_limpios)
+Load *
+Resident estados_a;
+
+DROP TABLE estados_limpios;
+*/
+
+// Store final into [lib://Dev E/BackUp/Geografia/limpieza_estados.qvd];
+// DROP TABLE final;
