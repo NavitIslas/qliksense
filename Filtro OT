@@ -1,0 +1,3 @@
+=IF(GetSelectedCount(DATE_UPDATE)>0,'$',
+IF(GetSelectedCount(Distrito)>0 or GetSelectedCount([Región])>0 or GetSelectedCount(Plaza)>0 or GetSelectedCount(CAJA_CLUSTER)>0 or GetSelectedCount(CODIGO_QR)
+     ,'DATE_UPDATE=','DATE_UPDATE={'&chr(39)&'$(=Date(vUltimaFecha-1))'&chr(39)&'}'))
